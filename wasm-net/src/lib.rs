@@ -17,9 +17,12 @@ use libp2p::{mplex, secio, yamux, Transport};
 use libp2p::{dns, tcp, websocket};
 
 #[cfg(not(target_os = "unknown"))]
-use async_std::{io, task};
-
+use async_std::io;
 use libp2p::core::{self, transport::OptionalTransport};
+use libp2p::multiaddr::Protocol;
+use libp2p::Multiaddr;
+use std::borrow::Cow;
+use std::net::Ipv4Addr;
 
 // This is lifted from the rust libp2p-rs gossipsub and massaged to work with wasm.
 // The "glue" to get messages from the browser injected into this service isn't done yet.
@@ -91,8 +94,12 @@ pub fn service(
 
     // Listen on all interfaces and whatever port the OS assigns.  Websockt can't receive incoming connections
     // on browser (oops?)
-    #[cfg(not(target_os = "unknown"))]
-    libp2p::Swarm::listen_on(&mut swarm, "/ip4/0.0.0.0/tcp/0/ws".parse().unwrap()).unwrap();
+    // Listen on all interfaces
+    let listen_addr = Multiaddr::empty()
+        .with(Protocol::from(Ipv4Addr::UNSPECIFIED))
+        .with(Protocol::Tcp(38615))
+        .with(Protocol::Ws(std::borrow::Cow::Borrowed("/")));
+    libp2p::Swarm::listen_on(&mut swarm, listen_addr).unwrap();
 
     // Reach out to another node if specified
     if let Some(to_dial) = dial {
