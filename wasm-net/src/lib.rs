@@ -8,7 +8,9 @@ use libp2p::swarm::Swarm;
 use libp2p::{
     core,
     floodsub::{self, Floodsub, FloodsubEvent},
-    identity, mplex, noise, wasm_ext, yamux, Multiaddr, NetworkBehaviour, PeerId, Transport,
+    identity, mplex, noise,
+    swarm::SwarmEvent,
+    wasm_ext, yamux, Multiaddr, NetworkBehaviour, PeerId, Transport,
 };
 use std::borrow::Cow;
 use std::net::Ipv4Addr;
@@ -16,6 +18,9 @@ use std::task::Poll;
 
 #[cfg(not(target_os = "unknown"))]
 use libp2p::{tcp, websocket};
+
+#[cfg(not(target_os = "unknown"))]
+use async_std::io;
 
 // This is lifted from the rust libp2p-rs gossipsub and massaged to work with wasm.
 // The "glue" to get messages from the browser injected into this service isn't done yet.
@@ -108,20 +113,77 @@ pub fn service(
         println!("Dialed {}", addr)
     }
 
+    #[cfg(not(target_os = "unknown"))]
+    let mut stdin = io::BufReader::new(io::stdin()).lines().fuse();
+
     let mut listening = false;
 
-    future::poll_fn(move |cx| loop {
-        match swarm.poll_next_unpin(cx) {
-            Poll::Ready(Some(event)) => log::info!("{:?}", event),
-            Poll::Ready(None) => return Poll::Ready(()),
-            Poll::Pending => {
-                if !listening {
-                    for addr in Swarm::listeners(&swarm) {
-                        log::info!("Listening on {}", addr);
-                        listening = true;
+    future::poll_fn(move |cx| {
+        #[cfg(not(target_os = "unknown"))]
+        loop {
+            match stdin.try_poll_next_unpin(cx) {
+                Poll::Ready(Some(Ok(line))) => {
+                    for peer in swarm.connected_peers() {
+                        log::info!("peer: {}", peer);
                     }
+                    swarm
+                        .behaviour_mut()
+                        .floodsub
+                        .publish(floodsub_topic.clone(), line.as_bytes())
                 }
-                return Poll::Pending;
+                Poll::Ready(Some(Err(_))) => panic!("Stdin errored"),
+                Poll::Ready(None) => panic!("Stdin closed"),
+                Poll::Pending => break,
+            };
+        }
+
+        loop {
+            match swarm.poll_next_unpin(cx) {
+                Poll::Ready(Some(event)) => match event {
+                    SwarmEvent::NewListenAddr { address, .. } => {
+                        log::info!("Listening on {:?}", address);
+                    }
+                    SwarmEvent::Behaviour(OutEvent::Floodsub(FloodsubEvent::Message(message))) => {
+                        log::info!(
+                            "Received: '{:?}' from {:?}",
+                            String::from_utf8_lossy(&message.data),
+                            message.source
+                        );
+                    }
+                    SwarmEvent::IncomingConnection {
+                        local_addr,
+                        send_back_addr,
+                    } => {
+                        log::info!(
+                            "Incoooming! local_addr: {} send_back_addr: {}",
+                            local_addr,
+                            send_back_addr
+                        )
+                    }
+                    SwarmEvent::IncomingConnectionError {
+                        local_addr,
+                        send_back_addr,
+                        error,
+                    } => {
+                        log::info!(
+                            "Incoming err local_addr: {} send_back_addr: {}, err: {}",
+                            local_addr,
+                            send_back_addr,
+                            error
+                        )
+                    }
+                    _ => {}
+                },
+                Poll::Ready(None) => return Poll::Ready(()),
+                Poll::Pending => {
+                    if !listening {
+                        for addr in Swarm::listeners(&swarm) {
+                            log::info!("Listening on {}", addr);
+                            listening = true;
+                        }
+                    }
+                    return Poll::Pending;
+                }
             }
         }
     })
