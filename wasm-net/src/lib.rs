@@ -1,30 +1,18 @@
 #[cfg(feature = "browser")]
 mod browser;
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-use std::task::{Context, Poll};
-use std::time::Duration;
-
 use futures::prelude::*;
 use libp2p::core::transport::OptionalTransport;
-use libp2p::gossipsub::{
-    GossipsubEvent, GossipsubMessage, IdentTopic as Topic, MessageAuthenticity, MessageId,
-    ValidationMode,
-};
-use libp2p::swarm::SwarmEvent;
-use libp2p::{
-    core, gossipsub, identity, mplex, noise, wasm_ext, yamux, Multiaddr, PeerId, Transport,
-};
+use libp2p::multiaddr::Protocol;
+use libp2p::ping::{Ping, PingConfig};
+use libp2p::swarm::Swarm;
+use libp2p::{core, identity, mplex, noise, wasm_ext, yamux, Multiaddr, PeerId, Transport};
+use std::borrow::Cow;
+use std::net::Ipv4Addr;
+use std::task::Poll;
 
 #[cfg(not(target_os = "unknown"))]
 use libp2p::{dns, tcp, websocket};
-
-#[cfg(not(target_os = "unknown"))]
-use async_std::io;
-use libp2p::multiaddr::Protocol;
-use std::borrow::Cow;
-use std::net::Ipv4Addr;
 
 // This is lifted from the rust libp2p-rs gossipsub and massaged to work with wasm.
 // The "glue" to get messages from the browser injected into this service isn't done yet.
@@ -79,44 +67,11 @@ pub async fn service(
         .timeout(std::time::Duration::from_secs(20))
         .boxed();
 
-    // Create a Gossipsub topic
-    let topic = Topic::new("test");
-
     // Create a Swarm to manage peers and events
     let mut swarm = {
-        // to set default parameters for gossipsub use:
-        // let gossipsub_config = gossipsub::GossipsubConfig::default();
+        let behaviour = Ping::new(PingConfig::new().with_keep_alive(true));
 
-        // To content-address message, we can take the hash of message and use it as an ID.
-        let message_id_fn = |message: &GossipsubMessage| {
-            let mut s = DefaultHasher::new();
-            message.data.hash(&mut s);
-            MessageId::from(s.finish().to_string())
-        };
-
-        // set custom gossipsub
-        let gossipsub_config = gossipsub::GossipsubConfigBuilder::default()
-            .heartbeat_interval(Duration::from_secs(10))
-            .validation_mode(ValidationMode::Strict)
-            .message_id_fn(message_id_fn) // content-address messages. No two messages of the
-            //same content will be propagated.
-            .build()
-            .expect("valid config");
-        // build a gossipsub network behaviour
-        let mut gossipsub: gossipsub::Gossipsub =
-            gossipsub::Gossipsub::new(MessageAuthenticity::Signed(local_key), gossipsub_config)
-                .expect("Correct configuration");
-        gossipsub.subscribe(&topic).unwrap();
-
-        // Reach out to another node if specified
-        if let Some(to_dial) = dial {
-            match to_dial.parse() {
-                Ok(id) => gossipsub.add_explicit_peer(&id),
-                Err(err) => println!("Failed to parse explicit peer id: {:?}", err),
-            }
-        }
-
-        libp2p::Swarm::new(transport, gossipsub, local_peer_id)
+        libp2p::Swarm::new(transport, behaviour, local_peer_id)
     };
 
     // Listen on all interfaces and whatever port the OS assigns.  Websockt can't receive incoming connections
@@ -128,53 +83,28 @@ pub async fn service(
         .with(Protocol::Ws(Cow::Borrowed("/")));
     libp2p::Swarm::listen_on(&mut swarm, listen_addr).unwrap();
 
-    // Read full lines from stdin (Disable for wasm, there is no stdin)
-    #[cfg(not(target_os = "unknown"))]
-    let mut stdin = io::BufReader::new(io::stdin()).lines().fuse();
+    if let Some(addr) = dial {
+        let remote: Multiaddr = addr.parse().unwrap();
+        swarm.dial(remote).unwrap();
+        println!("Dialed {}", addr)
+    }
 
     let mut listening = false;
 
-    future::poll_fn(move |cx: &mut Context| {
-        #[cfg(not(target_os = "unknown"))]
-        loop {
-            match stdin.try_poll_next_unpin(cx) {
-                Poll::Ready(Some(Ok(line))) => swarm
-                    .behaviour_mut()
-                    .publish(topic.clone(), line.as_bytes())
-                    .unwrap(),
-                Poll::Ready(Some(Err(_))) => panic!("Stdin errored"),
-                Poll::Ready(None) => panic!("Stdin closed"),
-                Poll::Pending => break,
-            };
-        }
-
-        loop {
-            match swarm.poll_next_unpin(cx) {
-                Poll::Ready(Some(gossip_event)) => match gossip_event {
-                    SwarmEvent::Behaviour(GossipsubEvent::Message {
-                        propagation_source: peer_id,
-                        message_id: id,
-                        message,
-                    }) => log::info!(
-                        "Got message: {} with id: {} from peer: {:?}",
-                        String::from_utf8_lossy(&message.data),
-                        id,
-                        peer_id
-                    ),
-                    _ => {}
-                },
-                Poll::Ready(None) | Poll::Pending => break,
+    future::poll_fn(move |cx| loop {
+        match swarm.poll_next_unpin(cx) {
+            Poll::Ready(Some(event)) => println!("{:?}", event),
+            Poll::Ready(None) => return Poll::Ready(()),
+            Poll::Pending => {
+                if !listening {
+                    for addr in Swarm::listeners(&swarm) {
+                        println!("Listening on {}", addr);
+                        listening = true;
+                    }
+                }
+                return Poll::Pending;
             }
         }
-
-        if !listening {
-            for addr in libp2p::Swarm::listeners(&swarm) {
-                println!("Listening on {:?}", addr);
-                listening = true;
-            }
-        }
-
-        Poll::<String>::Pending
     })
     .await;
 }
