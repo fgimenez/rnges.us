@@ -15,9 +15,9 @@ required-features = ["native"]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies.libp2p]
-version = "0.19.0"
+version = "0.48.0"
 default-features = false
-features = ["websocket", "kad", "dns", "ping", "identify", "mplex", "yamux", "noise", "tcp-async-std", "gossipsub", "secio", "wasm-ext"]
+features = ["websocket", "mplex", "yamux", "noise", "gossipsub", "wasm-ext", "tcp-async-io", "dns-async-std"]
 
 [dependencies]
 log = "0.4.8"
@@ -28,7 +28,7 @@ env_logger = { version = "0.7", optional = true }
 
 wasm-bindgen = { version = "0.2", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
-libp2p-wasm-ext = { version = "0.19.0", features = ["websocket"], optional = true }
+libp2p-wasm-ext = { version = "0.36.0", features = ["websocket"], optional = true }
 console_error_panic_hook = { version = "0.1.6", optional = true }
 console_log = { version = "0.1.2", optional = true }
 
@@ -38,6 +38,7 @@ rand6 = { package = "rand", version = "0.6", features = ["wasm-bindgen"], option
 rand = { version = "0.7", features = ["wasm-bindgen"], optional = true }
 futures-timer = { version = "3.0.1", features = ["wasm-bindgen"], optional = true }
 chrono = { version = "0.4", features = ["wasmbind"], optional = true }
+getrandom = { version = "0.2", features = ["js"] }
 
 [features]
 default = ["native"]
@@ -49,10 +50,10 @@ browser = [
 	"libp2p-wasm-ext",
 	"wasm-bindgen",
 	"wasm-bindgen-futures",
-    "console_log",
-    "console_error_panic_hook",
-    "rand6",
-    "rand",
-    "futures-timer",
-    "chrono",
+  "console_log",
+  "console_error_panic_hook",
+  "rand6",
+  "rand",
+  "futures-timer",
+  "chrono",
 ]
