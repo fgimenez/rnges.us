@@ -4,22 +4,25 @@ mod browser;
 use futures::prelude::*;
 use libp2p::core::transport::OptionalTransport;
 use libp2p::multiaddr::Protocol;
-use libp2p::ping::{Ping, PingConfig};
 use libp2p::swarm::Swarm;
-use libp2p::{core, identity, mplex, noise, wasm_ext, yamux, Multiaddr, PeerId, Transport};
+use libp2p::{
+    core,
+    floodsub::{self, Floodsub, FloodsubEvent},
+    identity, mplex, noise, wasm_ext, yamux, Multiaddr, NetworkBehaviour, PeerId, Transport,
+};
 use std::borrow::Cow;
 use std::net::Ipv4Addr;
 use std::task::Poll;
 
 #[cfg(not(target_os = "unknown"))]
-use libp2p::{dns, tcp, websocket};
+use libp2p::{tcp, websocket};
 
 // This is lifted from the rust libp2p-rs gossipsub and massaged to work with wasm.
 // The "glue" to get messages from the browser injected into this service isn't done yet.
-pub async fn service(
+pub fn service(
     wasm_external_transport: Option<wasm_ext::ExtTransport>,
     dial: Option<String>,
-) {
+) -> impl Future<Output = ()> {
     // Create a random PeerId
     let local_key = identity::Keypair::generate_ed25519();
     let local_peer_id = PeerId::from(local_key.public());
@@ -33,24 +36,13 @@ pub async fn service(
 
     #[cfg(not(target_os = "unknown"))]
     let transport = transport.or_transport({
-        let tcp_transport = tcp::TcpTransport::new(tcp::GenTcpConfig::new().nodelay(true));
-        let ws_tcp = websocket::WsConfig::new(tcp::TcpTransport::new(
+        websocket::WsConfig::new(tcp::TcpTransport::new(
             tcp::GenTcpConfig::new().nodelay(true),
         ))
-        .or_transport(tcp_transport);
-
-        OptionalTransport::some(if let Ok(dns) = dns::DnsConfig::system(ws_tcp).await {
-            dns.boxed()
-        } else {
-            websocket::WsConfig::new(tcp::TcpTransport::new(
-                tcp::GenTcpConfig::new().nodelay(true),
-            ))
-            .or_transport(tcp::TcpTransport::new(
-                tcp::GenTcpConfig::new().nodelay(true),
-            ))
-            .map_err(dns::DnsErr::Transport)
-            .boxed()
-        })
+        .or_transport(tcp::TcpTransport::new(
+            tcp::GenTcpConfig::new().nodelay(true),
+        ))
+        .boxed()
     });
 
     let noise_keys = noise::Keypair::<noise::X25519Spec>::new()
@@ -67,9 +59,36 @@ pub async fn service(
         .timeout(std::time::Duration::from_secs(20))
         .boxed();
 
+    // Create a Floodsub topic
+    let floodsub_topic = floodsub::Topic::new("chat");
+
+    // We create a custom network behaviour that combines floodsub and mDNS.
+    // Use the derive to generate delegating NetworkBehaviour impl.
+    #[derive(NetworkBehaviour)]
+    #[behaviour(out_event = "OutEvent")]
+    struct MyBehaviour {
+        floodsub: Floodsub,
+    }
+
+    #[allow(clippy::large_enum_variant)]
+    #[derive(Debug)]
+    enum OutEvent {
+        Floodsub(FloodsubEvent),
+    }
+
+    impl From<FloodsubEvent> for OutEvent {
+        fn from(v: FloodsubEvent) -> Self {
+            Self::Floodsub(v)
+        }
+    }
+
     // Create a Swarm to manage peers and events
     let mut swarm = {
-        let behaviour = Ping::new(PingConfig::new().with_keep_alive(true));
+        let mut behaviour = MyBehaviour {
+            floodsub: Floodsub::new(local_peer_id),
+        };
+
+        behaviour.floodsub.subscribe(floodsub_topic.clone());
 
         libp2p::Swarm::new(transport, behaviour, local_peer_id)
     };
@@ -93,12 +112,12 @@ pub async fn service(
 
     future::poll_fn(move |cx| loop {
         match swarm.poll_next_unpin(cx) {
-            Poll::Ready(Some(event)) => println!("{:?}", event),
+            Poll::Ready(Some(event)) => log::info!("{:?}", event),
             Poll::Ready(None) => return Poll::Ready(()),
             Poll::Pending => {
                 if !listening {
                     for addr in Swarm::listeners(&swarm) {
-                        println!("Listening on {}", addr);
+                        log::info!("Listening on {}", addr);
                         listening = true;
                     }
                 }
@@ -106,5 +125,4 @@ pub async fn service(
             }
         }
     })
-    .await;
 }

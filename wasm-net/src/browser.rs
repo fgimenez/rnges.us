@@ -1,11 +1,5 @@
 use std::str::FromStr;
 
-use futures::{
-    channel::{mpsc, oneshot},
-    compat::*,
-    future::{ok, poll_fn},
-    prelude::*,
-};
 use wasm_bindgen::prelude::*;
 
 use libp2p_wasm_ext::{ffi, ExtTransport};
