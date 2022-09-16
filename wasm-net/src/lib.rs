@@ -17,10 +17,10 @@ use std::net::Ipv4Addr;
 use std::task::Poll;
 
 #[cfg(not(target_os = "unknown"))]
-use libp2p::{tcp, websocket};
+use libp2p::{dns, tcp, websocket};
 
 #[cfg(not(target_os = "unknown"))]
-use async_std::io;
+use async_std::{io, task};
 
 // This is lifted from the rust libp2p-rs gossipsub and massaged to work with wasm.
 // The "glue" to get messages from the browser injected into this service isn't done yet.
@@ -41,13 +41,16 @@ pub fn service(
 
     #[cfg(not(target_os = "unknown"))]
     let transport = transport.or_transport({
-        websocket::WsConfig::new(tcp::TcpTransport::new(
+        let ws_trans = websocket::WsConfig::new(tcp::TcpTransport::new(
             tcp::GenTcpConfig::new().nodelay(true),
         ))
         .or_transport(tcp::TcpTransport::new(
             tcp::GenTcpConfig::new().nodelay(true),
-        ))
-        .boxed()
+        ));
+
+        task::block_on(dns::DnsConfig::system(ws_trans))
+            .unwrap()
+            .boxed()
     });
 
     let noise_keys = noise::Keypair::<noise::X25519Spec>::new()
