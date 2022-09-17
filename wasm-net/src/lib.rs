@@ -101,14 +101,17 @@ pub fn service(
         libp2p::Swarm::new(transport, behaviour, local_peer_id)
     };
 
-    // Listen on all interfaces and whatever port the OS assigns.  Websockt can't receive incoming connections
+    // Listen on all interfaces on 38615.  Websockt can't receive incoming connections
     // on browser (oops?)
-    // Listen on all interfaces
-    let listen_addr = Multiaddr::empty()
-        .with(Protocol::from(Ipv4Addr::UNSPECIFIED))
-        .with(Protocol::Tcp(38615))
-        .with(Protocol::Ws(Cow::Borrowed("/")));
-    libp2p::Swarm::listen_on(&mut swarm, listen_addr).unwrap();
+    #[cfg(not(target_os = "unknown"))]
+    libp2p::Swarm::listen_on(
+        &mut swarm,
+        Multiaddr::empty()
+            .with(Protocol::from(Ipv4Addr::UNSPECIFIED))
+            .with(Protocol::Tcp(38615))
+            .with(Protocol::Ws(Cow::Borrowed("/"))),
+    )
+    .unwrap();
 
     if let Some(addr) = dial {
         let remote: Multiaddr = addr.parse().unwrap();
